@@ -1,0 +1,24 @@
+exports/
+*.zip
+*.7z
+*.rar
+__pycache__/
+*.pyc
+.obsidian/workspace*.json
+
+.ai_brain/local_import.log
+
+# OS / 编辑器
+Thumbs.db
+desktop.ini
+.DS_Store
+# 依赖 / 环境
+node_modules/
+.venv/
+venv/
+# 临时 / 日志 / 备份
+*.bak
+*.tmp
+*.log
+~$*
+.ai_brain/auto_push.log
