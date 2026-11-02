@@ -22,3 +22,7 @@ venv/
 *.log
 ~$*
 .ai_brain/auto_push.log
+
+# 导出文件投放箱（内容导入到 pending/ 后不需要提交）
+.inbox/
+.ai_brain/scan_cache.json

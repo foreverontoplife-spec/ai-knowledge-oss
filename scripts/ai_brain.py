@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""ai_brain：扫描文件夹里的 AI 聊天导出（zip/json），转成 Obsidian 兼容 Markdown，存到 sources/<平台>/<年>/<年-月>/。
+"""ai_brain：扫描文件夹里的 AI 聊天导出（zip/json），转成 Obsidian 兼容 Markdown，先存到 pending/<平台>/<年>/<年-月>/ 待审阅，审阅通过（scripts/review.ps1 -Approve）后移入 sources/。
 仅用标准库。示例：
   python scripts/ai_brain.py                      # 扫描 ~/Downloads
   python scripts/ai_brain.py --src D:/exports --push
   python scripts/ai_brain.py --file x.json --platform claude
   python scripts/ai_brain.py --local --push          # 读取本机 Claude Code/DeepSeek、ChatGPT(Codex) 桌面版会话
+  python scripts/ai_brain.py --local --exports       # 再加上自动扫描 ~/Downloads 和 .inbox 里的官方导出
 """
 import argparse, hashlib, json, os, re, subprocess, sys, zipfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -57,18 +58,26 @@ def render(conv, platform, cid):
         lines += [f"## {'🧑 用户' if role == 'user' else '🤖 AI'}" + (f" · {t[:19].replace('T', ' ')}" if t else ""), "", text.strip(), ""]
     return "\n".join(lines)
 
-def write(conv, platform, root, ids):
+def write(conv, platform, root, ids, pending=None):
+    """新对话写到 pending/（待审阅）；已审阅（在 sources/）的对话有更新时，把新版本写到 pending/ 的同一相对路径，
+    不覆盖 sources/；审阅通过（review.ps1 -Approve）后再替换 sources/ 里的旧版本。"""
+    pending = pending or os.path.join(os.path.dirname(root), "pending")
     cid = f"{platform}:{conv['id']}"
     date = (conv["created"] or "1970-01-01")[:10]
     old = ids.get(cid)
-    path = old or os.path.join(root, platform, date[:4], date[:7], f"{date}-{slug(conv['title'])}.md")
-    if not old:
-        base, n = path[:-3], 2
-        while os.path.exists(path): path, n = f"{base}-{n}.md", n + 1
     new = render(conv, platform, cid)
     if old:
         with open(old, encoding="utf-8") as f:
             if f.read() == new: return "same"
+    if old and os.path.abspath(old).startswith(os.path.abspath(root) + os.sep):
+        path = os.path.join(pending, os.path.relpath(old, root))
+    elif old:
+        path = old
+    else:
+        path = os.path.join(pending, platform, date[:4], date[:7], f"{date}-{slug(conv['title'])}.md")
+        base, n = path[:-3], 2
+        while os.path.exists(path) or os.path.exists(os.path.join(root, os.path.relpath(path, pending))):
+            path, n = f"{base}-{n}.md", n + 1
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as f: f.write(new)
     ids[cid] = path
@@ -82,12 +91,21 @@ def main():
     ap.add_argument("--repo", default=REPO)
     ap.add_argument("--force", action="store_true", help="忽略已处理记录，重新处理")
     ap.add_argument("--local", action="store_true", help="读取本机客户端会话（不扫描导出文件）")
+    ap.add_argument("--exports", action="store_true", help="自动扫描 ~/Downloads 和 .inbox 里的官方导出文件（可与 --local 同用）")
     ap.add_argument("--commit", action="store_true"); ap.add_argument("--push", action="store_true", help="commit 并 push")
     a = ap.parse_args()
     root = os.path.join(a.repo, "sources"); log_path = os.path.join(a.repo, ".ai_brain", "processed.json")
     log = json.load(open(log_path, encoding="utf-8")) if os.path.exists(log_path) else {}
-    files = [] if a.local else (a.file or [os.path.join(a.src, f) for f in sorted(os.listdir(a.src)) if f.lower().endswith((".zip", ".json"))])
-    ids = index(root); st = {"new": 0, "updated": 0, "same": 0}; plats = set(); skipped = 0
+    if a.exports:
+        import export_scan
+        cache_p = os.path.join(a.repo, ".ai_brain", "scan_cache.json")  # 本机文件清单缓存，已 gitignore
+        cache = json.load(open(cache_p, encoding="utf-8")) if os.path.exists(cache_p) else {}
+        for k in [k for k in log if k.startswith("scan:")]: cache.setdefault(k, log.pop(k))
+        files = list(export_scan.candidates([(a.src, False), (os.path.join(a.repo, ".inbox"), True)], cache, a.force))
+        os.makedirs(os.path.dirname(cache_p), exist_ok=True); json.dump(cache, open(cache_p, "w", encoding="utf-8"), ensure_ascii=False)
+        print("导出文件候选:", len(files))
+    else: files = [] if a.local else (a.file or [os.path.join(a.src, f) for f in sorted(os.listdir(a.src)) if f.lower().endswith((".zip", ".json"))])
+    ids = index(root); ids.update(index(os.path.join(a.repo, "pending"))); st = {"new": 0, "updated": 0, "same": 0}; plats = set(); skipped = 0
     if a.local:
         import local_sources as L
         per = {}
@@ -121,7 +139,7 @@ def main():
     print(f"平台: {', '.join(sorted(plats)) or '无'} | 新增 {st['new']} | 更新 {st['updated']} | 未变 {st['same']} | 已处理过跳过 {skipped} 个文件")
     if (a.commit or a.push) and st["new"] + st["updated"]:
         g = lambda *x: subprocess.run(["git", "-C", a.repo, *x], check=True)
-        g("add", "sources", ".ai_brain"); g("commit", "-m", f"import {'/'.join(sorted(plats))}: +{st['new']} ~{st['updated']}")
+        g("add", "pending", ".ai_brain"); g("commit", "-m", f"import {'/'.join(sorted(plats))}: +{st['new']} ~{st['updated']}")
         if a.push: g("push")
 
 if __name__ == "__main__": main()

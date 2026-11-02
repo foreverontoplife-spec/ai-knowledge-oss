@@ -1,0 +1,8 @@
+{
+  "enable_summarize": false,
+  "summarize_model": "deepseek-flash",
+  "summarize_base_url": "https://api.deepseek.com",
+  "summarize_max_per_run": 10,
+  "summarize_max_chars": 24000,
+  "summarize_min_chars": 300
+}

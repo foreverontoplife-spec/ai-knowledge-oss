@@ -26,8 +26,14 @@ flowchart LR
   A["Claude Code / DeepSeek<br>.claude\projects"] --> P["local_sources.py<br>每小时 :05"]
   B["Codex 桌面版<br>.codex\sessions"] --> P
   E["官方导出文件<br>Grok、Claude 网页版等"] --> I["import.bat 手动导入"]
-  P --> S["sources/平台/年/月/*.md"]
-  I --> S
+  X["下载文件夹 / .inbox<br>官方导出 zip/json"] --> P
+  P --> Q["pending/ 待审阅"]
+  I --> Q
+  Q --> R["review.ps1 审阅"]
+  R --> S["sources/平台/年/月/*.md"]
+  S --> N["mirror_sources.py<br>ai-sources 搜索镜像"]
+  S -. 可选 .-> D["summarize.py<br>DeepSeek 摘要"]
+  D -.-> M
   C["Claude 桌面版<br>basic-memory"] --> M["brain/ PARA 笔记"]
   S --> G["auto_push.ps1<br>每小时 :35"]
   M --> G
@@ -38,7 +44,8 @@ flowchart LR
 
 ```
 ai-knowledge/
-├── sources/          原始对话，按平台再按年月分
+├── pending/          自动导入的对话先放这里，等你审阅
+├── sources/          审阅通过的原始对话，按平台再按年月分
 │   ├── claude/
 │   ├── chatgpt/
 │   ├── deepseek/
@@ -51,6 +58,8 @@ ai-knowledge/
 │   └── 4-Archive/
 ├── scripts/          转换、本地读取、自动推送脚本
 ├── .ai_brain/        已处理记录（去重）和日志
+├── .inbox/           导出文件投放箱（不进 git）
+├── ai_brain_config.json  可选功能开关（摘要默认关闭）
 ├── import.bat        手动导入官方导出文件
 └── README.md
 ```
@@ -63,6 +72,36 @@ ai-knowledge/
 4. **备份同步**：`auto_push.ps1` 每小时检查，有变化就提交并推送到 GitHub。
 
 `sources/` 是原始资料库，`brain/` 是加工后的知识库，GitHub 是云端备份。
+## 两步流程：自动导入 → 审阅
+
+1. **自动导入**：定时任务 `ai-knowledge-local-import` 每小时读取本机客户端会话，并自动扫描 **下载文件夹** 和仓库里的 **`.inbox/`** 找官方导出文件（ChatGPT / Claude / Grok / DeepSeek 的 zip/json；按修改时间+大小缓存，没变化不会重复打开）。转换结果先放进 `pending/`，不会直接进 `sources/`。
+   - 想手动投放导出文件：把 zip/json 放进 `.inbox/` 即可，下一次定时任务会处理。
+   - 手动跑一次：`python scripts\ai_brain.py --local --exports`
+2. **审阅**：看过 `pending/` 里的内容后再移入 `sources/`：
+   ```powershell
+   powershell -File scripts\review.ps1                       # 列出待审阅文件
+   powershell -File scripts\review.ps1 -Approve all          # 全部通过 → sources/
+   powershell -File scripts\review.ps1 -Approve pending\claude\2026\2026-11\x.md
+   powershell -File scripts\review.ps1 -Reject  pending\grok\2026\2026-11\y.md   # 移到 pending\_rejected，不会再导入
+   ```
+   移动后由每小时的 auto_push 一起提交推送。
+
+## 可选：DeepSeek 自动摘要（默认关闭）
+
+`scripts/summarize.py` 把 `sources/` 里新增或改过的对话提炼成摘要笔记（决策 / 待办 / 问题 / 要点 + 原文链接），写到 `brain/0-Inbox/summaries/`。
+- 开启：设置环境变量 `DEEPSEEK_API_KEY`，再把 `ai_brain_config.json` 里的 `"enable_summarize"` 改成 `true`（模型、每次最多处理数量等也在这里配）。
+- 先预览：`python scripts\summarize.py --dry-run`；手动跑：`python scripts\summarize.py --max 2`
+- **费用**：调用 DeepSeek API 按用量计费，具体以官方价格为准；用 `summarize_max_per_run` 控制每次处理数量。密钥只在运行时读取，不会写进仓库。
+
+## ai-sources 搜索镜像
+
+basic-memory 同步时会改写 Markdown 的 frontmatter，所以不直接指向 `sources/`。`scripts/mirror_sources.py` 每小时把 `sources/` 复制到仓库外的 `%LOCALAPPDATA%\ai-knowledge\sources-index`（只复制有变化的文件），作为 basic-memory 的 `ai-sources` 项目：
+```powershell
+basic-memory project add ai-sources "$env:LOCALAPPDATA\ai-knowledge\sources-index"   # setup.ps1 检测到 basic-memory 时会自动添加
+basic-memory tool search "关键词" --project ai-sources
+```
+在 Claude 桌面版里也可以说「在 ai-sources 里搜一下 关键词」，搜原始对话。
+
 ## 一、各平台怎么导出
 | 平台 | 步骤 | 得到 |
 |---|---|---|
@@ -158,7 +197,7 @@ def convert(data):                   # 每段对话 yield 一个 dict
 
 | 任务名 | 频率 | 做什么 |
 |---|---|---|
-| `ai-knowledge-local-import` | 每小时 :05 | `scripts/run_local_import.ps1`：导入本机新对话 → Markdown，然后调用 auto_push |
+| `ai-knowledge-local-import` | 每小时 :05 | `scripts/run_local_import.ps1`：导入本机会话和导出文件 → `pending/`，同步搜索镜像，（可选）摘要，然后调用 auto_push |
 | `ai-knowledge-autopush` | 每小时 :35 | `scripts/auto_push.ps1`：`git add -A` → 有改动才 commit（`auto: 时间`）→ `pull --rebase` → `push` |
 
 注册 / 删除（setup.ps1 已自动注册；只要登录着 Windows 就会在后台隐藏运行）：

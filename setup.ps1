@@ -25,7 +25,7 @@ if ($uv) { Do-It "uv pip install --system -r requirements.txt" { uv pip install 
 else     { Do-It "python -m pip install --user -r requirements.txt" { python -m pip install --user -r requirements.txt } }
 
 Step "3. 创建文件夹结构"
-$dirs = @("sources\claude","sources\chatgpt","sources\deepseek","sources\grok","brain\0-Inbox","brain\1-Projects","brain\2-Areas","brain\3-Resources","brain\4-Archive",".ai_brain","scripts")
+$dirs = @("sources\claude","sources\chatgpt","sources\deepseek","sources\grok","brain\0-Inbox","brain\1-Projects","brain\2-Areas","brain\3-Resources","brain\4-Archive",".ai_brain","scripts","pending",".inbox")
 foreach ($d in $dirs) { if (-not (Test-Path $d)) { Do-It "创建 $d" { New-Item -ItemType Directory -Force $d | Out-Null } } }
 Write-Host "文件夹结构 ✓"
 
@@ -33,7 +33,14 @@ Step "4. 定时任务"
 if ($NoTasks) { Write-Host "已跳过（-NoTasks）" }
 else { & (Join-Path $repo "scripts\install_tasks.ps1") -DryRun:$DryRun }
 
-Step "5. 首次导入本机会话"
-Do-It "python scripts\ai_brain.py --local" { $env:PYTHONIOENCODING = "utf-8"; python scripts\ai_brain.py --local }
+Step "5. 首次导入（本机会话 + 下载文件夹/.inbox 里的导出 → pending/）"
+Do-It "python scripts\ai_brain.py --local --exports" { $env:PYTHONIOENCODING = "utf-8"; python scripts\ai_brain.py --local --exports }
+
+Step "6. 搜索镜像（可选，basic-memory）"
+Do-It "python scripts\mirror_sources.py" { $env:PYTHONIOENCODING = "utf-8"; python scripts\mirror_sources.py }
+if (Get-Command basic-memory -ErrorAction SilentlyContinue) {
+  $idx = Join-Path $env:LOCALAPPDATA "ai-knowledge\sources-index"
+  Do-It "basic-memory project add ai-sources `"$idx`"" { basic-memory project add ai-sources "$idx" }
+} else { Write-Host "未安装 basic-memory，跳过 ai-sources 搜索项目（可稍后安装）" -ForegroundColor Yellow }
 
 Write-Host "`n完成。提醒：导入的对话是私人数据，你自己的仓库请设为 Private。" -ForegroundColor Green
