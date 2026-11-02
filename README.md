@@ -10,9 +10,11 @@
 ```powershell
 git clone https://github.com/<your-username>/<your-repo>.git $env:USERPROFILE\ai-knowledge
 cd $env:USERPROFILE\ai-knowledge
-git remote set-url origin https://github.com/<your-username>/<your-private-repo>.git   # 换成你的私有仓库
-python scripts\ai_brain.py --local      # 读取本机客户端会话
+powershell -ExecutionPolicy Bypass -File setup.ps1     # 先看一遍可加 -DryRun；不要定时任务加 -NoTasks
 ```
+完成。setup.ps1 会检查 Python/Git、安装依赖、建好文件夹、注册两个定时任务并首次导入。
+> 记得把 `origin` 换成你自己的 **Private** 仓库：`git remote set-url origin https://github.com/<your-username>/<your-private-repo>.git`
+
 所有脚本都以脚本所在仓库为根目录，放在哪里都能用。
 
 ## 整体结构和原理
@@ -152,33 +154,55 @@ def convert(data):                   # 每段对话 yield 一个 dict
 
 `.zst` 压缩会话需要 `zstandard`，脚本通过 `uv run --with zstandard` 自动获取（无需 pip）；直接用 `python` 运行时会跳过 .zst 并提示。
 
-### 定时任务（Windows 任务计划，用户级，无需管理员）
-
-在仓库根目录用 PowerShell 注册两个每小时任务：
-```powershell
-$repo = (Get-Location).Path
-$ps = "powershell.exe"
-$a1 = New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$repo\scripts\run_local_import.ps1`""
-$a2 = New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$repo\scripts\auto_push.ps1`""
-$t1 = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddMinutes(5)  -RepetitionInterval (New-TimeSpan -Hours 1)
-$t2 = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddMinutes(35) -RepetitionInterval (New-TimeSpan -Hours 1)
-Register-ScheduledTask ai-knowledge-local-import -Action $a1 -Trigger $t1
-Register-ScheduledTask ai-knowledge-autopush     -Action $a2 -Trigger $t2
-```
+## 定时任务（Windows 任务计划，用户级，无需管理员）
 
 | 任务名 | 频率 | 做什么 |
 |---|---|---|
-| `ai-knowledge-local-import` | 每小时 :05 | `scripts/run_local_import.ps1`：本机会话 → Markdown，然后调用 auto_push |
+| `ai-knowledge-local-import` | 每小时 :05 | `scripts/run_local_import.ps1`：导入本机新对话 → Markdown，然后调用 auto_push |
 | `ai-knowledge-autopush` | 每小时 :35 | `scripts/auto_push.ps1`：`git add -A` → 有改动才 commit（`auto: 时间`）→ `pull --rebase` → `push` |
 
-日志：`.ai_brain/local_import.log`、`.ai_brain/auto_push.log`。如需代理：设置用户环境变量 `HTTPS_PROXY=http://127.0.0.1:端口`。
+注册 / 删除（setup.ps1 已自动注册；只要登录着 Windows 就会在后台隐藏运行）：
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_tasks.ps1      # 注册（可加 -DryRun 预览）
+powershell -ExecutionPolicy Bypass -File scripts\uninstall_tasks.ps1    # 删除
+```
+
+**怎么查看**
+- 图形界面：Win+R 输入 `taskschd.msc` → 左侧「任务计划程序库」→ 找 `ai-knowledge-local-import` 和 `ai-knowledge-autopush`，下方能看触发时间、上次运行时间和结果，右键可手动运行或禁用。
+- PowerShell：`Get-ScheduledTask ai-knowledge-* | Get-ScheduledTaskInfo`（LastTaskResult 为 0 表示成功）。
+- 日志：`.ai_brain/local_import.log`、`.ai_brain/auto_push.log`（不进 git）。
 
 ```powershell
-Get-ScheduledTask ai-knowledge-* | Get-ScheduledTaskInfo   # 查看状态
-Start-ScheduledTask ai-knowledge-autopush                  # 立即运行
-Disable-ScheduledTask ai-knowledge-autopush                # 暂停（Enable 恢复）
-Unregister-ScheduledTask ai-knowledge-autopush -Confirm:$false   # 删除
+Start-ScheduledTask   ai-knowledge-autopush     # 立即运行一次
+Disable-ScheduledTask ai-knowledge-autopush     # 暂停（local-import 同理）
+Enable-ScheduledTask  ai-knowledge-autopush     # 恢复
 ```
+如需代理：设置用户环境变量 `HTTPS_PROXY=http://127.0.0.1:端口`，auto_push 会自动使用。
+
+## 怎么搜索
+
+1. **在 Claude 桌面版里问（basic-memory）**：直接说「在我的笔记里搜一下 关键词」，按相关度找出 `brain/` 里的笔记。命令行：`basic-memory tool search "关键词"`。只搜 `brain/`，不含 `sources/`。
+2. **Obsidian**：用 Obsidian 打开仓库文件夹，按 Ctrl+Shift+F 全文搜索，`brain/` 和 `sources/` 都能搜。
+3. **PowerShell 全文搜索**（无需安装）：
+   ```powershell
+   cd $env:USERPROFILE\ai-knowledge
+   Get-ChildItem sources, brain -Recurse -Filter *.md | Select-String -Pattern "关键词" -List | Select Path
+   ```
+   去掉 `-List | Select Path` 可看到每一处匹配的行。
+
+## 换新电脑怎么恢复
+
+1. 安装 Git、Python 3.9+ 和 uv：`powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`
+2. 克隆你自己的私有仓库：`git clone https://github.com/<your-username>/<your-private-repo>.git $env:USERPROFILE\ai-knowledge`
+3. 运行 `powershell -ExecutionPolicy Bypass -File setup.ps1`（装依赖、建文件夹、重建定时任务）。
+4. 安装 basic-memory：`uv tool install basic-memory --prerelease=allow --python 3.12`
+5. 添加项目：`basic-memory project add ai-knowledge "$env:USERPROFILE\ai-knowledge\brain"`
+6. 配置 Claude 桌面版 MCP：编辑 `%APPDATA%\Claude\claude_desktop_config.json`（商店版在 `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\`），合并加入：
+   ```json
+   {"mcpServers":{"basic-memory":{"command":"uvx","args":["--prerelease=allow","basic-memory","mcp"]}}}
+   ```
+   完全退出并重开 Claude 桌面版即可。
+7. 如果没用 setup.ps1，单独重建定时任务：`powershell -ExecutionPolicy Bypass -File scripts\install_tasks.ps1`
 
 ## 注意
 - 含对话的仓库必须保持 **Private**。
